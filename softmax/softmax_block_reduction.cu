@@ -1,49 +1,23 @@
 #include <cuda_runtime.h>
-
-__global__ void online_softmax(float* input_tensor, const int M, const int N){
-    //numerically stable online_softmax but non coalesced
-    // M -> num rows
-    // N -> num columns
-    // assumption that the tensor is stored in a row major layout
-    // one thread takes care of one row
-
-    //[3, 5, 4]
-
-    const unsigned int row = blockDim.x * blockIdx.x + threadIdx.x;
-    if(row < M){
-        float row_max = -INFINITY;
-        float norm = 0.0f;
-        for(int i = 0; i<N; i++){
-            int row_idx = row * N + i;
-
-            float x = input_tensor[row_idx];
-            if (x > row_max){
-                norm *= __expf(row_max - x);
-                row_max = x;  
-            }
-            norm += __expf(x - row_max);
-        }
-
-        for(int i = 0; i<N; i++){
-            int row_idx = row * N + i;
-            float x = input_tensor[row_idx];
-            input_tensor[row_idx] = __expf(x - row_max) / norm;
-        }
-    }
-}
-
+#include "include/softmax.cuh"
 
 __global__ void softmax_block_reduction(float* input_tensor, const int M, const int N){
-    // iterative improvement over online softmax 
+    // iterative improvement over online softmax //online softmax that uses block level reductions
     // each block solves one row ie if blockDim.x = 32, then 32 threads solve the entire row instead of single thread
 
     const unsigned int row = blockIdx.x;
     const unsigned int tid_x = threadIdx.x;
-    __shared__ float smem[1024];
-    if(row >= M) return;
 
+    //static allocation of shared memory
+    __shared__ float smem[1024];
+
+    if(row >= M) return; //allows early exit
+
+    //local_max and local_norm are thread specific register variables
     float local_max = -INFINITY;
     float local_norm = 0.0f;
+
+    //online softmax with local_norm error correction
     for(int i = tid_x; i<N; i += blockDim.x){
         float x = input_tensor[row * N + i];
         if(x > local_max){
@@ -52,6 +26,7 @@ __global__ void softmax_block_reduction(float* input_tensor, const int M, const 
         }
         local_norm += __expf(x - local_max);
     }
+    //save thread register local_max value in smem
     smem[tid_x] = local_max;
     __syncthreads();
     
@@ -64,8 +39,10 @@ __global__ void softmax_block_reduction(float* input_tensor, const int M, const 
         }
         __syncthreads();
     }
+    //first element is row_max after reduction
     float row_max = smem[0];
 
+    //load thread register into same smem (shared memory reused, avoids creating two instances for local_max as well as local_norm)
     smem[tid_x] = local_norm * __expf(local_max - row_max);
     __syncthreads();
 
@@ -80,11 +57,9 @@ __global__ void softmax_block_reduction(float* input_tensor, const int M, const 
     }
     float row_norm = smem[0];
 
-    __syncthreads();
-
-    // finally, compute softmax
+    // final and second pass to actually compute softmax
     for (int i = tid_x; i < N; i += blockDim.x) {
         int element_idx = row * N + i; 
-        input_tensor[element_idx] = expf(input_tensor[element_idx] - row_max) / row_norm;
+        input_tensor[element_idx] = __expf(input_tensor[element_idx] - row_max) / row_norm;
     }
 }
