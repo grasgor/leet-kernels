@@ -2,6 +2,8 @@
 
 #define CEIL_DIV(a, b) (((a) + (b) - 1) / (b))
 
+__global__ void naive_softmax_3pass(float* input_tensor, const int M, const int N);
+
 __global__ void online_softmax(float* input_tensor, const int M, const int N);
 
 __global__ void softmax_block_reduction(float* input_tensor, const int M, const int N);

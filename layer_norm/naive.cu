@@ -1,6 +1,6 @@
 #include <cuda_runtime.h>
 
-__global__ void layer_norm(float* input_tensor, float* output, const int M, const int N, const float eps){
+__global__ void naive_layer_norm(float* input_tensor, float* output, const int M, const int N, const float eps){
     //assumption: tensor is stored in row major layout
 
     int row_id = blockIdx.x * blockDim.x + threadIdx.x;
